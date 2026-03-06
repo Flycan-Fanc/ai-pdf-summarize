@@ -24,14 +24,7 @@
             <div class="muted">打字：{{ typingSpeed }} 字/秒</div>
           </div>
 
-          <el-segmented
-            v-model="themeMode"
-            :options="[
-              { label: '跟随系统', value: 'system' },
-              { label: '明亮', value: 'light' },
-              { label: '黑夜', value: 'dark' },
-            ]"
-          />
+          <el-segmented v-model="themeMode" :options="themeOptions" />
         </div>
       </div>
 
@@ -46,7 +39,7 @@
 
           <div class="dropzone" @dragover.prevent @drop.prevent="onDrop" @click="pickFile" :class="{ disabled: loadingParse }" title="点击选择或拖拽 PDF 到这里">
             <div class="dzTitle">点击选择 / 拖拽 PDF 到这里</div>
-            <div class="dzTip muted">纯前端解析。大 PDF 会慢一些；文本提取质量取决于 PDF 是否是“扫描图像”。</div>
+            <div class="dzTip muted">纯前端解析。大 PDF 会慢一些；文本提取质量取决于 PDF 是否是"扫描图像"。</div>
             <div class="dzActions">
               <el-button type="primary" :loading="loadingParse" @click.stop="pickFile">选择 PDF</el-button>
               <el-button :disabled="!pdfText || loadingParse" @click.stop="copyPdfText">复制解析文本</el-button>
@@ -97,21 +90,38 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, watch, onMounted, onBeforeUnmount, computed } from "vue";
 import { ElMessage } from "element-plus";
 
-// pdfjs
-import * as pdfjsLib from "pdfjs-dist";
-// 关键：Vite 下正确 worker 写法（pdfjs v4+）
-const workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
-(pdfjsLib as any).GlobalWorkerOptions.workerSrc = workerSrc;
+// 导入模块
+import { ThemeManager } from "../utils/theme";
+import { isPdfFile, parsePdfFile, handleFileSelect, handleFileDrop, handleDragOver, copyToClipboard } from "../utils/pdfHelper";
+import { AiService, buildDefaultMessages, createAiService, createTypewriterManager } from "../api/aiService";
 
-// -------------------- State --------------------
+// -------------------- 主题管理 --------------------
+const themeManager = new ThemeManager(ref("system"), ref(false));
+
+onMounted(() => {
+  themeManager.init();
+});
+
+onBeforeUnmount(() => {
+  themeManager.cleanup();
+});
+
+const themeMode = themeManager.themeMode;
+const effectiveTheme = computed(() => themeManager.getEffectiveTheme());
+const themeOptions = ThemeManager.getThemeOptions();
+
+watch(themeMode, (newValue) => {
+  themeManager.setThemeMode(newValue);
+});
+
+// -------------------- AI 配置 --------------------
 type Provider = "deepseek" | "openai";
-type ThemeMode = "system" | "light" | "dark";
 
 const provider = ref<Provider>("deepseek");
-const apiKey = ref<string>(""); // 仅本地演示
+const apiKey = ref<string>("");
 const baseUrl = ref<string>("https://api.deepseek.com");
 const model = ref<string>("deepseek-chat");
 
@@ -125,73 +135,74 @@ watch(provider, (p) => {
   }
 });
 
-// theme
-const themeMode = ref<ThemeMode>((localStorage.getItem("themeMode") as ThemeMode) || "system");
-watch(themeMode, (v) => localStorage.setItem("themeMode", v));
-
-const prefersDark = ref(false);
-let mql: MediaQueryList | null = null;
-onMounted(() => {
-  mql = window.matchMedia?.("(prefers-color-scheme: dark)") ?? null;
-  const apply = () => (prefersDark.value = !!mql?.matches);
-  apply();
-  mql?.addEventListener?.("change", apply);
-});
-onBeforeUnmount(() => {
-  mql?.removeEventListener?.("change", () => {});
-});
-
-const effectiveTheme = computed<"light" | "dark">(() => {
-  if (themeMode.value === "light") return "light";
-  if (themeMode.value === "dark") return "dark";
-  return prefersDark.value ? "dark" : "light";
-});
-
-// pdf
+// -------------------- PDF 相关状态 --------------------
 const fileInput = ref<HTMLInputElement | null>(null);
 const pdfName = ref("");
 const pdfText = ref("");
-const parseMs = ref<number | null>(null);
+const parseMs = ref<number | null>(null); //解析耗时
 const loadingParse = ref(false);
 
-// ai
+// -------------------- AI 相关状态 --------------------
 const errorMsg = ref("");
 const output = ref("");
 const loadingAI = ref(false);
 const typingSpeed = ref(25);
 
-// abort + typewriter
-let aborter: AbortController | null = null;
-const pending = ref("");
-let typerTimer: number | null = null;
+// -------------------- 打字机效果管理器 --------------------
+const typewriterManager = createTypewriterManager(typingSpeed.value);
 
-// -------------------- File pick & drop --------------------
+watch(typingSpeed, (newSpeed) => {
+  typewriterManager.setSpeed(newSpeed);
+  if (typewriterManager.isRunning()) {
+    typewriterManager.stop();
+    typewriterManager.start();
+  }
+});
+
+// -------------------- AI 服务实例 --------------------
+let aiService: AiService | null = null;
+
+watch(
+  [apiKey, baseUrl, model, provider],
+  () => {
+    aiService = createAiService({
+      apiKey: apiKey.value,
+      baseUrl: baseUrl.value,
+      model: model.value,
+      provider: provider.value,
+      timeout: 30000,
+    });
+  },
+  { immediate: true },
+);
+
+// -------------------- 文件处理函数 --------------------
 function pickFile() {
   fileInput.value?.click();
 }
 
 async function onFileChange(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = ""; // 允许重复选择同一文件
-  if (!file) return;
-  await parsePdfFile(file);
+  const file = handleFileSelect(e);
+  if (file) {
+    await parsePdf(file);
+  }
 }
 
 async function onDrop(e: DragEvent) {
-  const file = e.dataTransfer?.files?.[0];
-  if (!file) return;
-  await parsePdfFile(file);
+  handleDragOver(e);
+  const file = handleFileDrop(e);
+  if (file) {
+    await parsePdf(file);
+  }
 }
 
-// -------------------- PDF parse --------------------
-async function parsePdfFile(file: File) {
+// -------------------- PDF 解析函数 --------------------
+async function parsePdf(file: File) {
   errorMsg.value = "";
   output.value = "";
-  pending.value = "";
+  typewriterManager.reset();
 
-  const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-  if (!isPdf) {
+  if (!isPdfFile(file)) {
     ElMessage.error("请选择 PDF 文件");
     return;
   }
@@ -199,22 +210,14 @@ async function parsePdfFile(file: File) {
   loadingParse.value = true;
   try {
     pdfName.value = file.name;
-    const t0 = performance.now();
-    const buf = await file.arrayBuffer();
 
-    const task = pdfjsLib.getDocument({ data: buf });
-    const pdf = await task.promise;
+    const result = await parsePdfFile(file, {
+      maxChars: 60000,
+      includePageSeparators: true,
+    });
 
-    const texts: string[] = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const pageText = (content.items as any[]).map((it) => (typeof it.str === "string" ? it.str : "")).join(" ");
-      texts.push(pageText);
-    }
-
-    pdfText.value = texts.join("\n\n");
-    parseMs.value = Math.round(performance.now() - t0);
+    pdfText.value = result.text;
+    parseMs.value = result.parseTimeMs;
 
     ElMessage.success("解析完成");
   } catch (err: any) {
@@ -225,160 +228,92 @@ async function parsePdfFile(file: File) {
   }
 }
 
-// -------------------- AI summarize (SSE + typewriter) --------------------
-function startTyper() {
-  stopTyper();
-  const interval = Math.max(10, Math.floor(1000 / typingSpeed.value));
-  typerTimer = window.setInterval(() => {
-    if (!pending.value) return;
-    const n = pending.value.length > 1 ? 2 : 1;
-    output.value += pending.value.slice(0, n);
-    pending.value = pending.value.slice(n);
-  }, interval);
-}
-function stopTyper() {
-  if (typerTimer != null) {
-    clearInterval(typerTimer);
-    typerTimer = null;
-  }
-}
-
+// -------------------- AI 总结函数 --------------------
 async function summarize() {
   errorMsg.value = "";
   output.value = "";
-  pending.value = "";
+  typewriterManager.reset();
 
   if (!apiKey.value.trim()) {
     errorMsg.value = "请先填写 API Key";
     return;
   }
+
   if (!pdfText.value.trim()) {
     errorMsg.value = "请先上传并解析 PDF";
     return;
   }
 
+  if (!aiService) {
+    errorMsg.value = "AI 服务未初始化";
+    return;
+  }
+
   loadingAI.value = true;
-  startTyper();
-  aborter = new AbortController();
+  typewriterManager.start();
 
   try {
-    const url = joinUrl(baseUrl.value, "/chat/completions");
-    const prompt = buildPrompt(pdfText.value);
+    const messages = buildDefaultMessages(pdfText.value);
 
-    const res = await fetch(url, {
-      method: "POST",
-      signal: aborter.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey.value.trim()}`,
-      },
-      body: JSON.stringify({
-        model: model.value,
+    const success = await aiService.sendRequest(
+      {
+        messages,
         stream: true,
         temperature: 0.2,
-        messages: [
-          { role: "system", content: "你是一个擅长总结 PDF 的助手。输出要结构化、精炼。" },
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
+      },
+      {
+        onDelta: (delta) => {
+          typewriterManager.addPending(delta);
+        },
+        onComplete: (content) => {
+          output.value = content;
+        },
+        onError: (error) => {
+          errorMsg.value = error.message || "请求失败（可能是 CORS 或 Key/模型/地址错误）";
+        },
+        onAbort: () => {
+          ElMessage.info("已停止");
+        },
+      },
+    );
 
-    if (!res.ok) {
-      const t = await safeReadText(res);
-      throw new Error(`HTTP ${res.status} ${res.statusText}\n${t}`);
+    if (!success) {
+      // 错误已经在 onError 回调中处理
+      return;
     }
-    if (!res.body) throw new Error("浏览器不支持 ReadableStream");
-
-    await readSSE(res.body, (delta) => {
-      if (delta) pending.value += delta;
-    });
   } catch (err: any) {
-    if (err?.name === "AbortError") {
-      ElMessage.info("已停止");
-    } else {
-      console.error(err);
-      errorMsg.value = err?.message || "请求失败（可能是 CORS 或 Key/模型/地址错误）";
-    }
+    console.error(err);
+    errorMsg.value = err?.message || "请求失败";
   } finally {
     loadingAI.value = false;
-    aborter = null;
-    // 收尾：把剩余队列直接刷完，避免停半截
-    if (pending.value) {
-      output.value += pending.value;
-      pending.value = "";
-    }
-    stopTyper();
+    typewriterManager.finishImmediately();
+    output.value = typewriterManager.getOutput();
   }
 }
 
 function abortStream() {
-  aborter?.abort();
-}
-
-// SSE parser (OpenAI-compatible)
-async function readSSE(body: ReadableStream<Uint8Array>, onDelta: (text: string) => void) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-
-    // SSE event split by blank line
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
-
-    for (const ev of events) {
-      const lines = ev.split("\n");
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith("data:")) continue;
-        const data = t.replace(/^data:\s*/, "");
-        if (data === "[DONE]") return;
-
-        try {
-          const json = JSON.parse(data);
-          const delta = json?.choices?.[0]?.delta?.content;
-          if (typeof delta === "string") onDelta(delta);
-        } catch {
-          // ignore
-        }
-      }
-    }
+  if (aiService) {
+    aiService.abort();
   }
 }
 
-// -------------------- Helpers --------------------
-function buildPrompt(text: string) {
-  const maxChars = 60_000;
-  const clipped = text.length > maxChars ? text.slice(0, maxChars) : text;
-
-  return ["请阅读下面的 PDF 文本并总结，输出：", "1) 一句话摘要", "2) 关键要点（5-12条）", "3) 可执行建议（如果适用）", "", "PDF 文本如下：", clipped].join("\n");
-}
-
-function joinUrl(base: string, path: string) {
-  return base.replace(/\/+$/, "") + "/" + path.replace(/^\/+/, "");
-}
-
-async function safeReadText(res: Response) {
-  try {
-    return await res.text();
-  } catch {
-    return "";
-  }
-}
-
+// -------------------- 工具函数 --------------------
 async function copyPdfText() {
-  await navigator.clipboard.writeText(pdfText.value);
-  ElMessage.success("已复制解析文本");
+  const success = await copyToClipboard(pdfText.value);
+  if (success) {
+    ElMessage.success("已复制解析文本");
+  } else {
+    ElMessage.error("复制失败");
+  }
 }
 
 async function copyOutput() {
-  await navigator.clipboard.writeText(output.value);
-  ElMessage.success("已复制总结");
+  const success = await copyToClipboard(output.value);
+  if (success) {
+    ElMessage.success("已复制总结");
+  } else {
+    ElMessage.error("复制失败");
+  }
 }
 
 function clearAll() {
@@ -387,9 +322,8 @@ function clearAll() {
   pdfText.value = "";
   parseMs.value = null;
   output.value = "";
-  pending.value = "";
+  typewriterManager.reset();
   abortStream();
-  stopTyper();
 }
 </script>
 
