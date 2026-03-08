@@ -157,7 +157,8 @@ export function buildParseInfo(result: PdfParseResult): string {
  */
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(text);
+    const safeText = sanitizeText(text);
+    await navigator.clipboard.writeText(safeText);
     return true;
   } catch (error) {
     console.error("复制到剪贴板失败:", error);
@@ -181,14 +182,42 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 /**
+ * 文本字符清洗，防止特殊字符对复制结果造成干扰
+ * @param text
+ * @returns
+ */
+function sanitizeText(text: string): string {
+  return (
+    text
+      // 去掉 NUL 字符
+      .replace(/\u0000/g, "")
+      // 去掉大部分控制字符，但保留 \n \r \t
+      .replace(/[\u0001-\u0008\u000B-\u000C\u000E-\u001F\u007F]/g, "")
+      // 去掉零宽字符和 BOM
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      // 可选：统一 Unicode 行分隔符/段分隔符
+      .replace(/\u2028/g, "\n")
+      .replace(/\u2029/g, "\n\n")
+  );
+}
+
+/**
  * 格式化文件大小
  * @param bytes - 字节数
  * @returns 格式化后的文件大小字符串
  */
+/**
+ * 格式化文件大小，将字节数转换为更易读的格式（如 KB、MB、GB）
+ * @param bytes 文件大小的字节数
+ * @returns 格式化后的文件大小字符串
+ */
 export function formatFileSize(bytes: number): string {
+  // 如果字节数为0，直接返回"0 B"
   if (bytes === 0) return "0 B";
 
+  // 定义单位转换基数（1024字节=1KB）
   const k = 1024;
+  // 定义文件大小单位数组
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
 
@@ -243,7 +272,6 @@ export class PdfParser {
         }
       }
     }
-
     return results;
   }
 

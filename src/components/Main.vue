@@ -150,6 +150,10 @@ const typingSpeed = ref(25);
 
 // -------------------- 打字机效果管理器 --------------------
 const typewriterManager = createTypewriterManager(typingSpeed.value);
+// 设置打字机的增量回调，打字机输出内容时通知页面更新
+typewriterManager.setOnUpdate((text) => {
+  output.value = text;
+});
 
 watch(typingSpeed, (newSpeed) => {
   typewriterManager.setSpeed(newSpeed);

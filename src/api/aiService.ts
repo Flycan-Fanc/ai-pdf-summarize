@@ -6,7 +6,7 @@
 /**
  * AI 提供商类型
  */
-export type AiProvider = 'deepseek' | 'openai';
+export type AiProvider = "deepseek" | "openai";
 
 /**
  * AI 请求配置接口
@@ -28,7 +28,7 @@ export interface AiRequestConfig {
  * AI 消息接口
  */
 export interface AiMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: "system" | "user" | "assistant";
   content: string;
 }
 
@@ -72,20 +72,20 @@ export class AiService {
   }
 
   /**
-   * 获取默认配置
+   * 获取默认配置(选择的模型)
    * @param provider - AI 提供商
    * @returns 默认配置
    */
-  static getDefaultConfig(provider: AiProvider = 'deepseek'): Partial<AiRequestConfig> {
-    if (provider === 'deepseek') {
+  static getDefaultConfig(provider: AiProvider = "deepseek"): Partial<AiRequestConfig> {
+    if (provider === "deepseek") {
       return {
-        baseUrl: 'https://api.deepseek.com',
-        model: 'deepseek-chat',
+        baseUrl: "https://api.deepseek.com",
+        model: "deepseek-chat",
       };
     } else {
       return {
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-4o-mini',
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o-mini",
       };
     }
   }
@@ -99,15 +99,7 @@ export class AiService {
     const maxChars = 60000;
     const clipped = pdfText.length > maxChars ? pdfText.slice(0, maxChars) : pdfText;
 
-    return [
-      '请阅读下面的 PDF 文本并总结，输出：',
-      '1) 一句话摘要',
-      '2) 关键要点（5-12条）',
-      '3) 可执行建议（如果适用）',
-      '',
-      'PDF 文本如下：',
-      clipped,
-    ].join('\n');
+    return ["请阅读下面的 PDF 文本并总结，输出：", "1) 一句话摘要", "2) 关键要点（5-12条）", "3) 可执行建议（如果适用）", "", "PDF 文本如下：", clipped].join("\n");
   }
 
   /**
@@ -116,13 +108,10 @@ export class AiService {
    * @param handlers - 响应处理器
    * @returns Promise，表示请求是否成功
    */
-  async sendRequest(
-    params: AiRequestParams,
-    handlers: AiResponseHandler = {}
-  ): Promise<boolean> {
+  async sendRequest(params: AiRequestParams, handlers: AiResponseHandler = {}): Promise<boolean> {
     // 验证配置
     if (!this.config.apiKey.trim()) {
-      handlers.onError?.(new Error('请先填写 API Key'));
+      handlers.onError?.(new Error("请先填写 API Key"));
       return false;
     }
 
@@ -133,12 +122,12 @@ export class AiService {
     // 设置超时
     const timeoutId = setTimeout(() => {
       this.abortController?.abort();
-      handlers.onError?.(new Error('请求超时'));
+      handlers.onError?.(new Error("请求超时"));
     }, timeout);
 
     try {
-      const url = this.joinUrl(this.config.baseUrl, '/chat/completions');
-      
+      const url = this.joinUrl(this.config.baseUrl, "/chat/completions");
+
       const requestBody = {
         model: this.config.model,
         stream: params.stream !== false,
@@ -148,16 +137,16 @@ export class AiService {
       };
 
       const response = await fetch(url, {
-        method: 'POST',
+        method: "POST",
         signal: this.abortController.signal,
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.apiKey.trim()}`,
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.config.apiKey.trim()}`,
         },
         body: JSON.stringify(requestBody),
       });
 
-      clearTimeout(timeoutId);
+      clearTimeout(timeoutId); // 收到响应后立即停止超时定时器，防止误触发
 
       if (!response.ok) {
         const errorText = await this.safeReadText(response);
@@ -166,23 +155,23 @@ export class AiService {
 
       if (params.stream !== false) {
         if (!response.body) {
-          throw new Error('浏览器不支持 ReadableStream');
+          throw new Error("浏览器不支持 ReadableStream");
         }
         await this.readSSE(response.body, handlers.onDelta);
       } else {
         const data = await response.json();
-        const content = data.choices?.[0]?.message?.content || '';
+        const content = data.choices?.[0]?.message?.content || "";
         handlers.onComplete?.(content);
       }
 
       return true;
     } catch (error) {
       clearTimeout(timeoutId);
-      
-      if (error instanceof Error && error.name === 'AbortError') {
+
+      if (error instanceof Error && error.name === "AbortError") {
         handlers.onAbort?.();
       } else {
-        handlers.onError?.(error instanceof Error ? error : new Error('请求失败'));
+        handlers.onError?.(error instanceof Error ? error : new Error("请求失败"));
       }
       return false;
     } finally {
@@ -202,13 +191,10 @@ export class AiService {
    * @param body - 响应体
    * @param onDelta - 处理增量数据的回调函数
    */
-  private async readSSE(
-    body: ReadableStream<Uint8Array>,
-    onDelta?: (text: string) => void
-  ): Promise<void> {
+  private async readSSE(body: ReadableStream<Uint8Array>, onDelta?: (text: string) => void): Promise<void> {
     const reader = body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
 
     try {
       while (true) {
@@ -218,22 +204,23 @@ export class AiService {
         buffer += decoder.decode(value, { stream: true });
 
         // 按空行分割 SSE 事件
-        const events = buffer.split('\n\n');
-        buffer = events.pop() ?? '';
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
 
         for (const event of events) {
-          const lines = event.split('\n');
+          const lines = event.split("\n");
           for (const line of lines) {
             const trimmedLine = line.trim();
-            if (!trimmedLine.startsWith('data:')) continue;
+            if (!trimmedLine.startsWith("data:")) continue;
 
-            const data = trimmedLine.replace(/^data:\s*/, '');
-            if (data === '[DONE]') return;
+            // 只读取data内容，eg：data: {"choices":[{"delta":{"content":"你好"}}]} ————> "你好"
+            const data = trimmedLine.replace(/^data:\s*/, "");
+            if (data === "[DONE]") return;
 
             try {
               const json = JSON.parse(data);
               const delta = json?.choices?.[0]?.delta?.content;
-              if (typeof delta === 'string' && onDelta) {
+              if (typeof delta === "string" && onDelta) {
                 onDelta(delta);
               }
             } catch {
@@ -256,7 +243,7 @@ export class AiService {
     try {
       return await response.text();
     } catch {
-      return '';
+      return "";
     }
   }
 
@@ -267,7 +254,7 @@ export class AiService {
    * @returns 完整的 URL
    */
   private joinUrl(base: string, path: string): string {
-    return base.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
+    return base.replace(/\/+$/, "") + "/" + path.replace(/^\/+/, "");
   }
 }
 
@@ -275,17 +262,26 @@ export class AiService {
  * 打字机效果管理器
  */
 export class TypewriterManager {
-  private output: string = '';
-  private pending: string = '';
+  private output: string = "";
+  private pending: string = "";
   private timer: number | null = null;
   private speed: number = 25; // 字/秒
+  private onUpdate: ((text: string) => void) | null = null;
+
+  /**
+   * 设置更新回调
+   * @param callback - 输出更新时的回调
+   */
+  setOnUpdate(callback: (text: string) => void): void {
+    this.onUpdate = callback;
+  }
 
   /**
    * 设置打字速度
    * @param speed - 打字速度（字/秒）
    */
   setSpeed(speed: number): void {
-    this.speed = Math.max(5, Math.min(60, speed)); // 限制在 5-60 字/秒
+    this.speed = Math.max(5, Math.min(60, speed));
   }
 
   /**
@@ -309,15 +305,17 @@ export class TypewriterManager {
    */
   start(): void {
     this.stop();
-    
+
     const interval = Math.max(10, Math.floor(1000 / this.speed));
     this.timer = window.setInterval(() => {
       if (!this.pending) return;
-      
-      // 每次显示 1-2 个字符，根据剩余文本长度决定
+
       const chunkSize = this.pending.length > 1 ? 2 : 1;
       this.output += this.pending.slice(0, chunkSize);
       this.pending = this.pending.slice(chunkSize);
+
+      // 每次输出变化时通知外部
+      this.onUpdate?.(this.output);
     }, interval);
   }
 
@@ -337,7 +335,8 @@ export class TypewriterManager {
   finishImmediately(): void {
     if (this.pending) {
       this.output += this.pending;
-      this.pending = '';
+      this.pending = "";
+      this.onUpdate?.(this.output);
     }
     this.stop();
   }
@@ -347,8 +346,9 @@ export class TypewriterManager {
    */
   reset(): void {
     this.stop();
-    this.output = '';
-    this.pending = '';
+    this.output = "";
+    this.pending = "";
+    this.onUpdate?.(this.output);
   }
 
   /**
@@ -388,11 +388,11 @@ export function createTypewriterManager(speed: number = 25): TypewriterManager {
 export function buildDefaultMessages(pdfText: string): AiMessage[] {
   return [
     {
-      role: 'system',
-      content: '你是一个擅长总结 PDF 的助手。输出要结构化、精炼。',
+      role: "system",
+      content: "你是一个擅长总结 PDF 的助手。输出要结构化、精炼。",
     },
     {
-      role: 'user',
+      role: "user",
       content: AiService.buildPrompt(pdfText),
     },
   ];
